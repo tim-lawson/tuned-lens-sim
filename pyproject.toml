@@ -1,0 +1,12 @@
+[project]
+name = "tuned-lens-sim"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ruff>=0.6.5",
+    "sae-lens>=3.20.3",
+    "transformer-lens>=2.6.0",
+    "tuned-lens>=0.2.0",
+]
