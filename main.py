@@ -1,11 +1,12 @@
-from os import PathLike
-import sqlite3
+from collections.abc import Callable, Sequence
+from itertools import pairwise
+
+import pandas as pd
 import torch
 from sae_lens import SAE
-from tqdm import tqdm
+from transformer_lens import HookedTransformer
 from tuned_lens import TunedLens
 from tuned_lens.nn.unembed import Unembed
-from transformer_lens import HookedTransformer
 
 
 def get_device() -> torch.device:
@@ -18,73 +19,63 @@ def get_device() -> torch.device:
     )
 
 
-def create_db(database: str | PathLike) -> tuple[sqlite3.Connection, sqlite3.Cursor]:
-    conn = sqlite3.connect(database)
-    cursor = conn.cursor()
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS cosines (
-        layer_i INTEGER,
-        layer_j INTEGER,
-        latent_i INTEGER,
-        latent_j INTEGER,
-        cosine REAL,
-        PRIMARY KEY (layer_i, layer_j, latent_i, latent_j)
-    )
-    """)
-    conn.commit()
-    return conn, cursor
-
-
-def batch_insert(cursor: sqlite3.Cursor, data: list[tuple]) -> None:
-    cursor.executemany("INSERT OR REPLACE INTO cosines VALUES (?, ?, ?, ?, ?)", data)
-
-
-def normalize(x: torch.Tensor, dim: int = 0) -> torch.Tensor:
+def normalize(x: torch.Tensor, dim: int, eps: float = 1e-8) -> torch.Tensor:
     norm = torch.linalg.vector_norm(x, dim=dim, keepdim=True)
-    return x / torch.max(norm, 1e-8 * torch.ones_like(norm))
+    return x / torch.max(norm, eps * torch.ones_like(norm))
 
 
-if __name__ == "__main__":
+def mmcs(W_decs: Sequence[torch.Tensor], prefix: str) -> None:
+    mcs, mmcs = [], []
+
+    for layer1, layer2 in pairwise(range(len(W_decs))):
+        W_dec1 = normalize(W_decs[layer1], dim=-1)
+        W_dec2 = normalize(W_decs[layer2], dim=-1)
+        values, indices = torch.max(torch.mm(W_dec1, W_dec2.T), dim=1)
+        mcs += [
+            (layer1, layer2, latent1, latent2.item(), value.item())
+            for latent1, latent2, value in zip(
+                range(len(indices)), indices, values, strict=True
+            )
+        ]
+        mmcs.append((layer1, layer2, values.mean().item()))
+
+    pd.DataFrame(mcs, columns=["layer1", "layer2", "latent1", "latent2", "mcs"]).to_csv(
+        f"{prefix}_mcs.csv", index=False
+    )
+    pd.DataFrame(mmcs, columns=["layer1", "layer2", "mmcs"]).to_csv(
+        f"{prefix}_mmcs.csv", index=False
+    )
+
+
+def main(model_name: str, release: str, sae_id: Callable[[int], str]) -> None:
     device = get_device()
 
-    model = HookedTransformer.from_pretrained("gpt2", device=device, fold_ln=False)
+    model = HookedTransformer.from_pretrained(model_name, device=device, fold_ln=False)
     model = model.requires_grad_(False)
 
-    tuned_lens = TunedLens.from_unembed_and_pretrained(Unembed(model), "gpt2")
-    tuned_lens = tuned_lens.requires_grad_(False)
-    tuned_lens = tuned_lens.to(device)
+    lens = TunedLens.from_unembed_and_pretrained(Unembed(model), model_name)
+    lens = lens.requires_grad_(False)
+    lens = lens.to(device)
 
     saes = [
         SAE.from_pretrained(
-            release="gpt2-small-resid-post-v5-32k",
-            sae_id=f"blocks.{layer}.hook_resid_post",
+            release=release,
+            sae_id=sae_id(layer),
             device=str(device),
         )[0].requires_grad_(False)
-        for layer in range(12)
+        for layer in range(model.cfg.n_layers)
     ]
 
-    W_decs = [
-        tuned_lens.transform_hidden(sae.W_dec, idx) for idx, sae in enumerate(saes)
-    ]
+    mmcs([sae.W_dec for sae in saes], f"{release}_base")
+    mmcs(
+        [lens.transform_hidden(sae.W_dec, layer) for layer, sae in enumerate(saes)],
+        f"{release}_lens",
+    )
 
-    del model, tuned_lens, saes
 
-    conn, cursor = create_db("cosines.db")
-    batch_size = 100_000
-
-    for layer_i, W_dec_i in tqdm(enumerate(W_decs)):
-        for layer_j, W_dec_j in tqdm(enumerate(W_decs)):
-            W_dec_i, W_dec_j = normalize(W_dec_i), normalize(W_dec_j)
-            cosines = torch.mm(W_dec_i, W_dec_j.T)
-
-            batch = []
-            for i in range(cosines.shape[0]):
-                for j in range(cosines.shape[1]):
-                    batch.append((layer_i, layer_j, i, j, cosines[i, j].item()))
-                    if len(batch) >= batch_size:
-                        batch_insert(cursor, batch)
-                        batch = []
-            if batch:
-                batch_insert(cursor, batch)
-        conn.commit()
-    conn.close()
+if __name__ == "__main__":
+    main(
+        "gpt2",
+        "gpt2-small-resid-post-v5-32k",
+        lambda layer: f"blocks.{layer}.hook_resid_post",
+    )

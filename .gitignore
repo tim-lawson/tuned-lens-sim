@@ -1,4 +1,3 @@
 .ruff_cache
 .venv
-*.db
-*.db-journal
+*.csv
