@@ -41,10 +41,10 @@ def mmcs(W_decs: Sequence[torch.Tensor], prefix: str) -> None:
         mmcs.append((layer1, layer2, values.mean().item()))
 
     pd.DataFrame(mcs, columns=["layer1", "layer2", "latent1", "latent2", "mcs"]).to_csv(
-        f"{prefix}_mcs.csv", index=False
+        f"out/{prefix}_mcs.csv", index=False
     )
     pd.DataFrame(mmcs, columns=["layer1", "layer2", "mmcs"]).to_csv(
-        f"{prefix}_mmcs.csv", index=False
+        f"out/{prefix}_mmcs.csv", index=False
     )
 
 
