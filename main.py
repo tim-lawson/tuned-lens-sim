@@ -1,4 +1,5 @@
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from itertools import pairwise
 
 import pandas as pd
@@ -53,7 +54,9 @@ def main(model_name: str, release: str, sae_id: Callable[[int], str]) -> None:
     model = HookedTransformer.from_pretrained(model_name, device=device, fold_ln=False)
     model = model.requires_grad_(False)
 
-    lens = TunedLens.from_unembed_and_pretrained(Unembed(model), model_name)
+    lens = TunedLens.from_unembed_and_pretrained(
+        Unembed(model), model_name, map_location=device
+    )
     lens = lens.requires_grad_(False)
     lens = lens.to(device)
 
@@ -73,9 +76,59 @@ def main(model_name: str, release: str, sae_id: Callable[[int], str]) -> None:
     )
 
 
+@dataclass
+class Config:
+    model_name: str
+    release: str
+    sae_id: Callable[[int], str]
+
+
 if __name__ == "__main__":
-    main(
-        "gpt2",
-        "gpt2-small-resid-post-v5-32k",
-        lambda layer: f"blocks.{layer}.hook_resid_post",
-    )
+    for config in [
+        Config(
+            "EleutherAI/pythia-70m-deduped",
+            "pythia-70m-deduped-res-sm",
+            lambda layer: f"blocks.{layer}.hook_resid_post",
+        ),
+        Config(
+            "EleutherAI/pythia-70m-deduped",
+            "pythia-70m-deduped-mlp-sm",
+            lambda layer: f"blocks.{layer}.hook_mlp_out",
+        ),
+        Config(
+            "EleutherAI/pythia-70m-deduped",
+            "pythia-70m-deduped-att-sm",
+            lambda layer: f"blocks.{layer}.hook_attn_out",
+        ),
+        Config(
+            "gpt2",
+            "gpt2-small-resid-post-v5-32k",
+            lambda layer: f"blocks.{layer}.hook_resid_post",
+        ),
+        Config(
+            "gpt2",
+            "gpt2-small-res-jb",
+            lambda layer: f"blocks.{layer}.hook_resid_pre",
+        ),
+        Config(
+            "gpt2",
+            "gpt2-small-resid-post-v5-32k",
+            lambda layer: f"blocks.{layer}.hook_resid_post",
+        ),
+        Config(
+            "gpt2",
+            "gpt2-small-resid-mid-v5-32k",
+            lambda layer: f"blocks.{layer}.hook_resid_mid",
+        ),
+        Config(
+            "gpt2",
+            "gpt2-small-mlp-out-v5-32k",
+            lambda layer: f"blocks.{layer}.hook_mlp_out",
+        ),
+        Config(
+            "gpt2",
+            "gpt2-small-attn-out-v5-32k",
+            lambda layer: f"blocks.{layer}.hook_attn_out",
+        ),
+    ]:
+        main(config.model_name, config.release, config.sae_id)
